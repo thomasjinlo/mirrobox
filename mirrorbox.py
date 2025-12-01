@@ -18,19 +18,47 @@ import win32con
 import sys
 import time
 import argparse
+import re
 
 # ===========================================================
 # CONFIGURATION — set the source window title and the targets
 # ===========================================================
 # Only when the foreground window contains SOURCE_TITLE (case-insensitive)
 # will the input be mirrored to the TARGET_TITLES windows.
-SOURCE_TITLE = "Source Window"
+# SOURCE_TITLE and TARGET_TITLES are treated as regular expressions
+# (case-insensitive). Provide regexes as strings. Example: r"Notepad" or
+# r"^Untitled - Notepad$".
+SOURCE_TITLE = r"Source Window"
 
 TARGET_TITLES = [
-    "Window 1",
-    "Window 2",
-    "Window 3",
+    r"Window 1",
+    r"Window 2",
+    r"Window 3",
 ]
+
+# compiled regex patterns (populated by compile_* functions)
+TARGET_PATTERNS = []
+SOURCE_RE = None
+
+
+def compile_target_patterns():
+    global TARGET_PATTERNS
+    TARGET_PATTERNS = []
+    for p in TARGET_TITLES:
+        try:
+            TARGET_PATTERNS.append(re.compile(p, re.IGNORECASE))
+        except re.error:
+            # invalid pattern -> skip but notify
+            print(f"Invalid target regex pattern: {p}")
+
+
+def compile_source_pattern():
+    global SOURCE_RE
+    try:
+        SOURCE_RE = re.compile(SOURCE_TITLE, re.IGNORECASE)
+    except re.error:
+        print(f"Invalid source regex pattern: {SOURCE_TITLE}")
+        SOURCE_RE = None
 
 
 # ===========================================================
@@ -47,8 +75,14 @@ def enum_win(hwnd, ctx):
     except Exception:
         return
 
-    if any(t.lower() in title.lower() for t in TARGET_TITLES):
-        target_windows.append(hwnd)
+    # match against compiled regex patterns
+    for pat in TARGET_PATTERNS:
+        try:
+            if pat.search(title):
+                target_windows.append(hwnd)
+                return
+        except Exception:
+            continue
 
 
 def refresh_target_windows():
@@ -94,7 +128,12 @@ def print_target_summary():
 def is_source_active():
     fg = win32gui.GetForegroundWindow()
     title = win32gui.GetWindowText(fg) or ""
-    return SOURCE_TITLE.lower() in title.lower()
+    if SOURCE_RE is None:
+        return SOURCE_TITLE.lower() in title.lower()
+    try:
+        return bool(SOURCE_RE.search(title))
+    except Exception:
+        return False
 
 
 def send_mouse_event(x, y, event_flag):
@@ -220,6 +259,10 @@ def _cli():
     if args.source:
         global SOURCE_TITLE
         SOURCE_TITLE = args.source
+        compile_source_pattern()
+
+    # compile target patterns before any listing/refresh
+    compile_target_patterns()
 
     if args.list_targets or args.list_targets if False else False:
         # this branch kept for safe refactor; real flag handled below
@@ -229,9 +272,13 @@ def _cli():
         all_w = list_all_windows()
         print("Visible windows (hwnd, title):")
         for hwnd, title in all_w:
-            matches = [t for t in TARGET_TITLES if t.lower() in title.lower()]
-            mark = "MATCH" if matches else ""
-            print(f"{hwnd}\t{mark}\t{title}")
+            try:
+                matches = [pat.pattern for pat in TARGET_PATTERNS if pat.search(title)]
+                mark = "MATCH" if matches else ""
+                mm = ",".join(matches)
+                print(f"{hwnd}\t{mark}\t{mm}\t{title}")
+            except Exception:
+                print(f"{hwnd}\t\t{title}")
         return
 
     if args.show_target_summary:
@@ -285,5 +332,4 @@ keyboard_listener.start()
 
 mouse_listener.join()
 keyboard_listener.join()
-
 keyboard_listener.start()
